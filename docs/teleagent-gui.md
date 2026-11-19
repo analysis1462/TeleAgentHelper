@@ -1,6 +1,6 @@
 # TeleAgent 云电脑助手（TeleAgentHelper）
 
-把 [TeleAgent](https://agent.teleai.com.cn/teleagent) 的登录、云电脑保活和每日签到做成了一个可双击运行的 Windows 桌面程序。界面与 CtyunHelper 一致（walk/Win32 原生控件），程序文件为 `dist\TeleAgentHelper-v1.8.1.exe`。
+把 [TeleAgent](https://agent.teleai.com.cn/teleagent) 的登录、云电脑保活和每日签到做成了一个可双击运行的 Windows 桌面程序。界面与 CtyunHelper 一致（walk/Win32 原生控件），程序文件为 `dist\TeleAgentHelper-v1.8.2.exe`。
 
 > **账号说明：登录使用 [www.teleai.com.cn](https://www.teleai.com.cn/) 的账号密码（与网页端同一套），不是 TeleAgent 平台的账号密码；两者不互通，请勿使用 TeleAgent 账号登录。**
 
@@ -21,10 +21,13 @@
 - **托盘常驻**：关闭窗口只最小化到托盘，托盘菜单可打开主界面、开始/停止保活、立即签到、退出。
 - **开机自启**：勾选后写入 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`，值为 `"<exe 路径>" --startup`，开机时隐藏到托盘启动。
 - **单实例**：重复双击只会提示“已经在运行”，不会出现两个保活进程。
+- **关于页面**：主界面右上角「关于」链接或托盘菜单可打开；集中展示项目地址、上游项目、免责声明和许可证说明，支持打开项目主页与复制地址。
+
+![关于页面](screenshot-about.png)
 
 ## 使用
 
-1. 双击 `TeleAgentHelper-v1.8.1.exe`。
+1. 双击 `TeleAgentHelper-v1.8.2.exe`。
 2. 任选一种登录：填写账号和密码后点「密码登录」（DPAPI 加密保存在本机）；或点「扫码登录」用天翼账号 App 扫窗口里的二维码；或点「浏览器登录」在浏览器里自行登录。
 3. 登录成功后自动开始保活与自动签到，界面会显示云电脑实例、实例状态、最近心跳、最近检查、最近错误。
 4. 想直接进桌面时点「打开云电脑」，程序会在浏览器里打开云电脑页面（先确认实例是运行中，否则会先启动再等它就绪）。
@@ -66,6 +69,7 @@ go build ./cmd/teleagent-gui
 - 「打开云电脑」链路：`Instances` → 未运行则 `Start` 并每 3 秒轮询 → `Connect` 取 `pc.ctyun.cn/#/fullview?token=…` → `rundll32 url.dll,FileProtocolHandler` 交给系统默认浏览器。这个 token 是 TeleAgent 的连接票据，不是账号凭据。
 - `internal/teleagent/refresh.go`：登录态续期（POST /superCowork/sapi/cowork/auth/token-refresh，秒级 X-Timestamp），成功即写回本地会话；40115 表示服务端已无该会话记录，此时只记日志、token 仍可用到过期时间。
 - `internal/teleagent`：协议实现。`login.go` + `captcha.go` 负责账号密码登录与滑块，`qrlogin.go` 负责扫码登录（getUUID / image / qrcodeLoginState 三个接口 + 票据换会话），`login_edge.go` / 浏览器接管负责「浏览器登录」，`keeper.go` 负责保活状态机，`signin.go` 负责签到巡检，`creds.go`/`session.go` 负责本地凭据。
+- v1.8.2 新增「关于」页面：`cmd/teleagent-gui/about_windows.go` 使用 fixed-size walk Dialog 展示项目地址、上游项目、免责声明和 MIT 许可说明；入口在状态栏右侧「关于」链接与托盘菜单，支持打开项目主页和复制地址。
 - v1.8.1 在积分旁增加「刷新积分」按钮：只调用 `userCenter` 接口，按钮独立置灰/恢复，不阻塞「刷新状态」和「立即签到」；登录态失效时先尝试自动续期再查一次。
 - v1.8.0 界面改为浅色卡片式布局：顶部账号状态栏、登录卡、云电脑保活与每日签到双卡、底部运行日志；状态用绿/橙/红区分，积分用 20pt 大字，窗口位置和大小会记住；登录成功自动并发刷新状态（见「登录后自动刷新」）。
 - v1.7.1 修复账号密码登录：网页端 `accountEncrypt` 模块加密的是密码**原文**，此前实现按 `JSON.stringify` 加了双引号，服务端解密出「"密码"」后比对失败，即使密码正确也返回 `10980039 用户名或密码不正确`。

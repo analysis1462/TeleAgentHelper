@@ -30,7 +30,7 @@ import (
 
 const (
 	appTitle           = "TeleAgent 云电脑助手"
-	appVersion         = "1.8.1"
+	appVersion         = "1.8.2"
 	singleInstanceName = "Local\\TeleAgentHelper.SingleInstance.v1"
 	autostartRunKey    = `Software\Microsoft\Windows\CurrentVersion\Run`
 	autostartAppName   = "TeleAgentHelper"
@@ -153,6 +153,7 @@ type app struct {
 	logger        *logging.Logger
 	qrLogin       *teleagent.QRLogin
 	qrDlg         *walk.Dialog
+	aboutDlg      *walk.Dialog
 	qrView        *walk.CustomWidget
 	qrBitmap      *walk.Bitmap
 	qrBrush       *walk.SolidColorBrush
@@ -305,7 +306,14 @@ func (a *app) create() error {
 				Layout: d.VBox{Spacing: 2, MarginsZero: true},
 				Children: []d.Widget{
 					d.TextLabel{AssignTo: &a.statusLabel, Text: "未登录", Font: uiFont(10, true), TextColor: colorMuted, TextAlignment: d.AlignHFarVCenter},
-					d.TextLabel{Text: "v" + appVersion, Font: uiFont(8, false), TextColor: colorMuted, TextAlignment: d.AlignHFarVCenter},
+					d.Composite{
+						Layout: d.HBox{Spacing: 6, MarginsZero: true},
+						Children: []d.Widget{
+							d.TextLabel{Text: "v" + appVersion, Font: uiFont(8, false), TextColor: colorMuted, TextAlignment: d.AlignHFarVCenter},
+							d.Label{Text: "·", Font: uiFont(8, false), TextColor: colorMuted},
+							d.LinkLabel{Text: `<a href="about">关于</a>`, Font: uiFont(8, false), OnLinkActivated: func(*walk.LinkLabelLink) { a.showAbout() }},
+						},
+					},
 				},
 			},
 		},
@@ -576,6 +584,9 @@ func (a *app) createTray(icon walk.Image) error {
 		return err
 	}
 	if err := tray.ContextMenu().Actions().Add(walk.NewSeparatorAction()); err != nil {
+		return err
+	}
+	if err := add("关于", a.showAbout); err != nil {
 		return err
 	}
 	if err := add("退出", a.quit); err != nil {

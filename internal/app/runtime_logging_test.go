@@ -84,6 +84,7 @@ func TestRuntimePublishesLogEventsAndRecordsStateTransitions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer logger.Close()
 	model := NewModel(State{Connection: ConnectionAuth})
 	runtime := NewRuntime(model, nil, nil, nil, RuntimeOptions{Logger: logger})
 	events, unsubscribe := model.Events().Subscribe(32)

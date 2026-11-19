@@ -193,9 +193,12 @@ func (r *Runtime) Start(parent context.Context) {
 	r.mu.Unlock()
 	if r.logger != nil && r.model != nil {
 		events, unsubscribe := r.model.Events().Subscribe(64)
+		// 在启动观察 goroutine 之前同步取初始快照，避免调用方紧接着 Update 时
+		// 观察者尚未被调度，把第一批状态变化误当成初始状态而漏记日志。
+		initial := r.model.Snapshot()
 		go func() {
 			defer logging.RecoverPanic("app.state_observer")
-			r.observeState(rootCtx, r.model.Snapshot(), events, unsubscribe)
+			r.observeState(rootCtx, initial, events, unsubscribe)
 		}()
 		r.logger.Info("app", "Runtime 启动")
 	}

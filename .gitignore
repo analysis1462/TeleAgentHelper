@@ -1,0 +1,35 @@
+# Build output
+/bin/
+/dist/
+/out/
+*.exe
+*.exe~
+*.test
+*.out
+coverage.*
+
+# Local environment and editors
+.env
+.env.*
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Logs
+*.log
+logs/
+
+# Reverse-engineering and scratch files
+/.recon/
+/-controls.json
+docs/tmp-*
+tmp-*.ps1
+*.bak
+
+# Go workspace files
+go.work
+go.work.sum
+
+# Local caches
+/.cache/

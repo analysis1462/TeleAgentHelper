@@ -1,0 +1,289 @@
+package app
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/uvwt/CtyunHelper/internal/automation"
+	"github.com/uvwt/CtyunHelper/internal/ctyun/auth"
+	"github.com/uvwt/CtyunHelper/internal/ctyun/points"
+)
+
+type blockingSession struct {
+	starts atomic.Int32
+}
+
+func (s *blockingSession) Run(ctx context.Context) error {
+	s.starts.Add(1)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+type panicSession struct{}
+
+func (panicSession) Run(context.Context) error {
+	panic("session exploded")
+}
+
+type manualClinkLoginSession struct {
+	starts atomic.Int32
+}
+
+func (s *manualClinkLoginSession) Run(context.Context) error {
+	s.starts.Add(1)
+	return fmt.Errorf("%w: credentials rejected", errClinkLoginActionRequired)
+}
+
+func TestRuntimeDoesNotRetryManualClinkLoginRequirement(t *testing.T) {
+	session := &manualClinkLoginSession{}
+	runtime := &Runtime{session: session}
+	done := make(chan struct{})
+	runtime.runSession(context.Background(), done)
+	if session.starts.Load() != 1 {
+		t.Fatalf("session starts = %d, want 1", session.starts.Load())
+	}
+}
+
+func TestRuntimeSessionPanicBecomesRetryableError(t *testing.T) {
+	crashLog, err := os.CreateTemp(t.TempDir(), "runtime-panic-*.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer crashLog.Close()
+	previousStderr := os.Stderr
+	os.Stderr = crashLog
+	defer func() { os.Stderr = previousStderr }()
+
+	runtime := &Runtime{session: panicSession{}}
+	err = runtime.runSessionAttempt(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "保活会话 panic: session exploded") {
+		t.Fatalf("runSessionAttempt() error = %v", err)
+	}
+	if err := crashLog.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(crashLog.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(content)
+	if !strings.Contains(text, "PANIC app.keepalive_session session exploded") || !strings.Contains(text, "panicSession.Run") {
+		t.Fatalf("crash log missing panic context:\n%s", text)
+	}
+}
+
+type switchingSession struct {
+	starts    atomic.Int32
+	active    atomic.Int32
+	maxActive atomic.Int32
+	started   chan int32
+}
+
+func (s *switchingSession) Run(ctx context.Context) error {
+	start := s.starts.Add(1)
+	active := s.active.Add(1)
+	for {
+		max := s.maxActive.Load()
+		if active <= max || s.maxActive.CompareAndSwap(max, active) {
+			break
+		}
+	}
+	s.started <- start
+	<-ctx.Done()
+	s.active.Add(-1)
+	return ctx.Err()
+}
+
+func TestRuntimeStartsOnlyOneSessionForRestoredBoundProfile(t *testing.T) {
+	profile := auth.Profile{UserID: 1, SecretKey: "test", CommonLoginReqHeader: "common", BondedDevice: true}
+	store := &memoryAccountStore{profile: profile, profileExists: true}
+	client := auth.NewClient(auth.DeviceIdentity{Code: "ctyun_fixed"}, auth.ClientOptions{})
+	model := NewModel(State{})
+	flow := NewAuthFlow(client, store, model, nil)
+	if restored, err := flow.Restore("account"); err != nil || !restored {
+		t.Fatalf("restore=%v err=%v", restored, err)
+	}
+	session := &blockingSession{}
+	runtime := NewRuntime(model, flow, session, nil, RuntimeOptions{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runtime.Start(ctx)
+	runtime.StartSession()
+	runtime.StartSession()
+	deadline := time.Now().Add(time.Second)
+	for session.starts.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := session.starts.Load(); got != 1 {
+		t.Fatalf("session starts = %d, want 1", got)
+	}
+	runtime.Stop()
+}
+
+func TestRuntimeDoesNotStartUnboundSession(t *testing.T) {
+	profile := auth.Profile{UserID: 1, SecretKey: "test", CommonLoginReqHeader: "common", BondedDevice: false}
+	store := &memoryAccountStore{profile: profile, profileExists: true}
+	client := auth.NewClient(auth.DeviceIdentity{Code: "ctyun_fixed"}, auth.ClientOptions{})
+	client.UseProfile(profile)
+	model := NewModel(State{Connection: ConnectionDeviceBind})
+	flow := NewAuthFlow(client, store, model, nil)
+	session := &blockingSession{}
+	runtime := NewRuntime(model, flow, session, nil, RuntimeOptions{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runtime.Start(ctx)
+	time.Sleep(20 * time.Millisecond)
+	if got := session.starts.Load(); got != 0 {
+		t.Fatalf("unbound session starts = %d", got)
+	}
+	runtime.Stop()
+}
+
+func TestRuntimeRefreshesPointsAfterFirstLogin(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/auth/client/genChallengeData":
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"challengeId": "challenge", "challengeCode": "salt"}})
+		case "/api/auth/client/login":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"code": 0,
+				"data": map[string]any{
+					"userId": 2, "userEid": "eid", "tenantId": 3,
+					"secretKey": "key", "commonLoginReqHeader": "common", "bondedDevice": true,
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	model := NewModel(State{Connection: ConnectionAuth})
+	pointsClient := &appPointsRedeemClient{
+		tasks: []points.Task{{Name: automation.UsageTaskName, Status: automation.TaskDone, CurrentProgress: 60}},
+		value: 650,
+	}
+	tasks, _ := newAppAutomationForPoints(t, model, pointsClient, false)
+	authClient := auth.NewClient(auth.DeviceIdentity{Code: "device"}, auth.ClientOptions{APIOrigin: server.URL, HTTPClient: server.Client()})
+	flow := NewAuthFlow(authClient, &memoryAccountStore{}, model, nil)
+	runtime := NewRuntime(model, flow, nil, tasks, RuntimeOptions{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runtime.Start(ctx)
+	defer runtime.Stop()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		state := model.Snapshot().PointsTask
+		if !state.LastRun.IsZero() && !state.Running {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if state := model.Snapshot().PointsTask; state.LastRun.IsZero() || state.Running {
+		t.Fatalf("startup points refresh did not finish: %#v", state)
+	}
+	if _, err := runtime.CompleteLogin(context.Background(), "account", "password", "1234", "captcha-key"); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(time.Second)
+	for model.Snapshot().Points != 650 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	state := model.Snapshot()
+	if state.Points != 650 || !state.UsageTask.Found {
+		t.Fatalf("points were not refreshed after login: %#v", state)
+	}
+}
+
+func TestRuntimeSwitchAccountStopsOldSessionBeforeStartingNewOne(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/auth/client/genChallengeData":
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"challengeId": "challenge", "challengeCode": "salt"}})
+		case "/api/auth/client/login":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"code": 0,
+				"data": map[string]any{
+					"userId": 2, "userEid": "new-eid", "tenantId": 3,
+					"secretKey": "new-key", "commonLoginReqHeader": "new-common",
+					"bondedDevice": true,
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	oldProfile := auth.Profile{
+		UserID: 1, UserEID: "old-eid", TenantID: 2,
+		SecretKey: "old-key", CommonLoginReqHeader: "old-common", BondedDevice: true,
+	}
+	store := &memoryAccountStore{account: "old-account", profile: oldProfile, profileExists: true}
+	client := auth.NewClient(auth.DeviceIdentity{Code: "ctyun_fixed"}, auth.ClientOptions{
+		APIOrigin: server.URL, HTTPClient: server.Client(),
+	})
+	client.UseProfile(oldProfile)
+	model := NewModel(State{Account: "old-account", Connection: ConnectionStopped})
+	flow := NewAuthFlow(client, store, model, nil)
+	session := &switchingSession{started: make(chan int32, 4)}
+	runtime := NewRuntime(model, flow, session, nil, RuntimeOptions{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runtime.Start(ctx)
+
+	select {
+	case start := <-session.started:
+		if start != 1 {
+			t.Fatalf("first start = %d", start)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("old session did not start")
+	}
+
+	if _, err := runtime.CompleteLogin(context.Background(), "new-account", "password", "1234", "captcha-key"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case start := <-session.started:
+		if start != 2 {
+			t.Fatalf("second start = %d", start)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("new session did not start")
+	}
+	if got := session.maxActive.Load(); got != 1 {
+		t.Fatalf("max concurrent sessions = %d, want 1", got)
+	}
+	if got := model.Snapshot().Account; got != "new-account" {
+		t.Fatalf("account = %q", got)
+	}
+	runtime.Stop()
+}
+
+func TestRuntimeRejectsAccountSwitchWhileAIJobIsRunning(t *testing.T) {
+	model := NewModel(State{Account: "old-account", AITask: JobStatus{Running: true}})
+	runtime := NewRuntime(model, nil, nil, nil, RuntimeOptions{})
+	_, err := runtime.CompleteLogin(
+		context.Background(),
+		"new-account",
+		"password",
+		"1234",
+		"captcha-key",
+	)
+	if err == nil || err.Error() != "app: 自动任务正在运行，暂不能更换账号" {
+		t.Fatalf("CompleteLogin() error = %v", err)
+	}
+	if got := model.Snapshot().Account; got != "old-account" {
+		t.Fatalf("account changed to %q", got)
+	}
+}

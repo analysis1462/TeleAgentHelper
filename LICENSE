@@ -19,3 +19,37 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+Scope
+
+This MIT License applies only to the original TeleAgentHelper work, including:
+
+- cmd/teleagent/**
+- cmd/teleagent-gui/**
+- internal/teleagent/**
+- scripts/build-teleagent-gui-windows.ps1
+- docs/teleagent-gui.md
+- the original TeleAgentHelper portions of README.md, CHANGELOG.md and NOTICE.md
+- .github/workflows/**, .gitignore, .gitattributes and .editorconfig
+
+All files originating from, copied from, or derived from uvwt/CtyunHelper
+remain the property of their original authors and are not covered by this MIT
+License. This includes, without limitation:
+
+- cmd/ctyun-helper/**
+- internal/app/**
+- internal/automation/**
+- internal/ctyun/**
+- internal/winui/**
+- internal/storage/**
+- internal/logging/**
+- internal/buildinfo/**
+- scripts/build-release-windows.ps1
+- scripts/embed-icon-windows.ps1
+- docs/ctyunhelper.md
+
+If a file contains both original TeleAgentHelper content and upstream content,
+the upstream portions remain subject to the upstream authors' rights; this
+license applies only to the original portions.
